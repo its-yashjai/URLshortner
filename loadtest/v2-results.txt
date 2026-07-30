@@ -1,0 +1,9 @@
+BASE_URL:        http://localhost:8200
+Concurrency:     150 virtual users
+Duration:        30s
+Completed:       2821 requests
+Errors:          0
+Throughput:      94.0 req/s
+P50 latency:     1125.3 ms
+P95 latency:     4812.5 ms
+P99 latency:     5822.8 ms

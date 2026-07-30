@@ -1,0 +1,47 @@
+version: "3.9"
+
+# v1 (naive) baseline: single app instance, auto-increment ids, synchronous
+# click-count writes, no cache. This is what Phase 1's k6 run measures.
+# Run with: docker compose -f docker-compose.v1.yml up --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: urlshort
+    volumes:
+      - pgdata_v1:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/urlshort
+      REDIS_URL: redis://redis:6379/0
+      BASE_URL: http://localhost:8000
+      USE_SNOWFLAKE_ID: "false"
+      ASYNC_CLICK_WRITES: "false"
+      CACHE_READS: "false"
+      WORKER_ID: "0"
+      REPLICA_NAME: "naive-single"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # Redis is still declared here (unused by the naive code paths) purely so
+  # the compose file boots cleanly without editing REDIS_URL out of config.py.
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  pgdata_v1:

@@ -1,0 +1,10 @@
+BASE_URL:        http://localhost:8101
+Concurrency:     80 virtual users
+Duration:        20s
+Hot set size:    30 codes
+Completed:       4073 requests
+Errors:          0
+Throughput:      203.7 req/s
+P50 latency:     383.2 ms
+P95 latency:     491.9 ms
+P99 latency:     601.9 ms

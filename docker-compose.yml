@@ -1,0 +1,87 @@
+version: "3.9"
+
+# v2 (scaled) setup: 3 app replicas behind Nginx, Redis doing both
+# cache-aside reads and async click-count write buffering, Snowflake ids.
+# For the v1 naive baseline, see docker-compose.v1.yml instead.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: urlshort
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Three replicas, each with a distinct WORKER_ID so their Snowflake
+  # generators never collide, and a distinct REPLICA_NAME so the frontend's
+  # live diagram can show real request distribution across them.
+  app1:
+    build: .
+    environment: &app-env
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/urlshort
+      REDIS_URL: redis://redis:6379/0
+      BASE_URL: http://localhost
+      USE_SNOWFLAKE_ID: "true"
+      ASYNC_CLICK_WRITES: "true"
+      CACHE_READS: "true"
+      FLUSH_INTERVAL_SECONDS: "2.0"
+      WORKER_ID: "1"
+      REPLICA_NAME: "app1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  app2:
+    build: .
+    environment:
+      <<: *app-env
+      WORKER_ID: "2"
+      REPLICA_NAME: "app2"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  app3:
+    build: .
+    environment:
+      <<: *app-env
+      WORKER_ID: "3"
+      REPLICA_NAME: "app3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8000:80"
+    depends_on:
+      - app1
+      - app2
+      - app3
+
+volumes:
+  pgdata:

@@ -39,14 +39,12 @@ docker compose -f docker-compose.v1.yml up --build
 # app available at http://localhost:8000
 ```
 
-**Locally without Docker**, set up PostgreSQL, copy `.env.example` to `.env`, and run:
+**Locally without Docker**, set env vars from `.env.example` and run:
 
 ```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
-
-The default configuration expects PostgreSQL.
 
 Project link for sharing: [https://github.com/its-yashjai/URLshortner.git](https://github.com/its-yashjai/URLshortner.git)
 
