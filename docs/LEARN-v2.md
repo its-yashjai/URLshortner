@@ -6,13 +6,13 @@ Read this after you're comfortable with v1. Same rule: be able to explain it out
 
 ## 1. The 30-second pitch (updated)
 
-> "I built a URL shortener with FastAPI and Postgres in two measured versions. In v1, every click did a database write, and clicks on a popular link queued for the same row lock. In v2 I added Redis: popular links are served from an in-memory cache, and click counts are buffered in Redis and saved to Postgres in one batch every 2 seconds. I load-tested both on my laptop: throughput went up 17%, the slowest 1% of requests got 45% faster, database writes dropped by 99.9%, and no clicks were lost."
+> "I built a URL shortener with FastAPI and Postgres in two measured versions. In v1, every click did a database write, and clicks on a popular link queued for the same row lock. In v2 I added Redis: popular links are served from an in-memory cache, and click counts are buffered in Redis and saved to Postgres in one batch every 2 seconds. I also made the app stateless and ran 3 copies behind Nginx, so it scales by adding copies. I load-tested both on my laptop: throughput went up 17%, the slowest 1% of requests got 45% faster, database writes dropped by 99.9%, and no clicks were lost."
 
 If they ask for more, add the bug story (section 3) and the "it depends where the bottleneck is" point. Both show you measured instead of assuming.
 
 ---
 
-## 2. The 4 changes in v2
+## 2. The 5 changes in v2
 
 ### Change 1: Redis cache ("cache-aside")
 **Problem in v1:** every click asked Postgres "what's the long URL for code X?"
@@ -61,6 +61,53 @@ If they ask for more, add the bug story (section 3) and the "it depends where th
 
 ### Change 4: Graceful degradation
 If Redis goes down, the redirect **doesn't fail**. It catches the Redis error and falls back to the v1 way (read + update Postgres directly). Slower, but the site stays up. The `/health` endpoint reports `"redis": "down"` so you'd notice.
+
+### Change 5: Several copies of the app behind Nginx (horizontal scaling)
+**Problem:** one Python app process can only do so much work. On a fast machine it was the bottleneck (~91% CPU).
+
+**Fix:** run **3 identical copies** (replicas) of the app, with **Nginx** in front as a **load balancer**.
+- Nginx is the only thing users talk to (port 8000). It sends request 1 to copy 1, request 2 to copy 2, request 3 to copy 3, then starts again. That's called **round-robin**.
+- Tested: 24,489 requests split exactly **8,163 / 8,163 / 8,163**.
+
+**Why this works: the copies are "stateless."** No copy keeps anything important in its own memory. Links live in Postgres, and cache and clicks live in Redis. So **any copy can answer any request**, and if one copy crashes, the others carry on. To scale up, change `replicas: 3` to `replicas: 10`.
+
+**The problem this created, and the fix (good interview point):** every copy runs its own flusher. If two copies flushed at the same moment, both could read the same snapshot and add those clicks to Postgres **twice**.
+- **Fix: a Redis lock.** Before flushing, a copy runs `SET clicks:flush-lock <token> NX PX 10000`. **NX** = "only if nobody else holds it", so only one copy wins. **PX 10000** = the lock auto-expires after 10 seconds, so if the winner crashes, the lock doesn't stay stuck forever.
+- The other copies see the lock is taken and simply skip that round.
+- Tested: 2 flushers started at the exact same time, one did the work and one skipped, no double counting. And with 3 copies under load, Postgres matched the clicks exactly (24,488 = 24,488).
+
+---
+
+## 2b. Plain-words glossary
+
+**Atomic:** happens completely in one step, with nothing able to sneak in the middle. Like a UPI payment: money leaves your account *and* reaches your friend's, or neither happens. There's no in-between moment where someone else could see or change it. `RENAME` in Redis is atomic: at one instant the key is called `clicks:pending`, at the next it's `clicks:flushing:abc`. A click arriving at that exact moment lands either in the old key (which becomes the snapshot) or in a brand-new `clicks:pending`. It can't get lost in between.
+
+**Snapshot:** a frozen copy of the click tally at one moment. Think of the class monitor tearing off the current tally page and taking it to the office, while the class starts a fresh page. The torn-off page is the snapshot.
+
+**The stats bug, in those words:** while the monitor is walking to the office with the torn-off page, those clicks are on neither the fresh page (`clicks:pending`) nor in the register (Postgres). The old `/stats` only looked at the fresh page and the register, so it missed the page in the monitor's hand for a moment. Now it also counts the page being carried.
+
+**Batch:** doing many small things as one big thing. Instead of 1,000 separate "add 1" writes to Postgres, one write says "add 312 to link A, 540 to link B, 148 to link C".
+
+**Batched clicks, tech used:**
+- **Redis hash + `HINCRBY`:** the tally page. One counter per short code, +1 per click, in memory.
+- **Python `asyncio` background task:** the monitor who wakes up every 2 seconds (`app/flusher.py`).
+- **Postgres + `unnest`, sent with `asyncpg`:** one `UPDATE` statement that takes two lists (codes and counts) and updates every row at once.
+
+**Cache-aside, super simple:** like a sticky note on your desk. Before walking to the library (Postgres), check the sticky note (Redis). If the answer is on it, done. If not, go to the library, get the answer, and write it on a sticky note for next time.
+
+**"What if a link changes but the old one is cached?":** imagine a future "edit link" feature. Your short link `abc` points to `google.com`, and you edit it to point to `yahoo.com`. Postgres now says yahoo, but the sticky note in Redis still says google for up to 1 hour (the TTL), so people keep getting sent to google. Fix: when a link is edited, throw away its sticky note. That's called **cache invalidation**. v2 has no edit feature, so this is only a "what if" question.
+
+**Base62 vs `secrets`:** base62 is just the **alphabet** (0-9, a-z, A-Z), not the security. The security comes from **how you pick** the characters.
+- v1: counted `1, 2, 3…` and wrote each number in base62 → `1`, `2`, `3`… Easy to guess the next one.
+- v2: picks each of the 7 characters **at random** from that alphabet → `k9Ab2xQ`, `P03mzLe`… There's no pattern, so you can't guess another link.
+- `secrets` is the tool that does the random picking. Python's normal `random` module can be predicted by an attacker who sees enough outputs. `secrets` can't, so it's the right tool for anything that must not be guessable.
+
+**Why not a Snowflake ID?** A Snowflake ID is a big number built from **time + machine number + counter**. It's unique, but it's ~11 characters long in base62 and partly guessable (it's based on the clock). Random 7-character codes are shorter and not guessable. That was a deliberate tradeoff.
+
+**Why call it "scalable"?** Scalable = it can handle more traffic by adding more machines, without redesigning it.
+- **More users?** Add more app copies behind Nginx. It works because they're stateless.
+- **More clicks?** Database writes don't grow with clicks. It's still one batch every 2 seconds, whether there are 100 clicks or 100,000.
+- **More reads?** Popular links come from the Redis cache, not Postgres.
 
 ---
 
@@ -129,6 +176,9 @@ In one v2 run you sent **15,791** clicks, but `/stats` showed **15,756**, so 35 
 9. **How are random codes kept unique?** The UNIQUE constraint rejects a clash, and the app retries with a new code.
 10. **Why `secrets` and not `random`?** `random` is predictable. `secrets` is cryptographically secure.
 11. **Did v2 make it faster?** On my laptop, yes: +17% throughput and 45% lower p99, averaged over several runs. The biggest win was the slow tail, because the row-lock queue disappeared. On a faster machine where the database wasn't the bottleneck, throughput stayed the same, because the Python process was the limit there.
-12. **What would you do next?** Run several stateless copies of the app behind a load balancer like Nginx, because the single Python process is now the limit.
-13. **Why run the benchmark several times?** Results varied by up to ~30% between runs because Docker shares the laptop with other programs. Averaging several runs gives a number you can trust.
-14. **Tell me about a bug you found.** The in-transit clicks bug in section 3: noticed it in the benchmark output, found the cause, fixed it, and added a regression test.
+12. **How does it scale?** Stateless app copies behind Nginx (add more copies), a Redis cache for reads, and batched writes, so the database load doesn't grow with clicks.
+13. **Several copies each run a flusher. Why don't clicks get counted twice?** A Redis lock (`SET NX PX`) lets only one copy flush at a time. The lock expires on its own if that copy crashes.
+14. **What does "stateless" mean, and why does it matter?** No copy keeps important data in its own memory, so any copy can serve any request and copies can be added or removed freely.
+15. **Why run the benchmark several times?** Results varied by up to ~30% between runs because Docker shares the laptop with other programs. Averaging several runs gives a number you can trust.
+16. **Tell me about a bug you found.** The in-transit clicks bug in section 3: noticed it in the benchmark output, found the cause, fixed it, and added a regression test.
+17. **What would you do next?** Postgres read replicas for more read traffic, and Redis persistence (AOF) to shrink the "lost clicks if Redis crashes" window.

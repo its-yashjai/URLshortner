@@ -102,7 +102,8 @@ def test_unknown_and_junk_codes_404(client):
 
 
 def test_health(client):
-    assert client.get("/health").json() == {"status": "ok", "redis": "ok"}
+    body = client.get("/health").json()
+    assert body["status"] == "ok" and body["redis"] == "ok" and body["instance"]
 
 
 def test_stats_include_clicks_mid_flush(client):
@@ -124,3 +125,18 @@ def test_stats_include_clicks_mid_flush(client):
 
     client.portal.call(finish)
     assert client.get(f"/{code}/stats").json()["click_count"] == 4
+
+
+def test_only_one_replica_flushes_at_a_time(client):
+    """With several replicas, two flushers running at once must not
+    double-count. The Redis lock lets only one of them do the work."""
+    code = _shorten(client)
+    for _ in range(6):
+        client.get(f"/{code}", follow_redirects=False)
+
+    async def two_flushers_at_once():
+        return await asyncio.gather(flusher.flush_once(), flusher.flush_once())
+
+    results = client.portal.call(two_flushers_at_once)
+    assert sorted(results) == [0, 6]  # one did the work, the other skipped
+    assert client.portal.call(_db_click_count, code) == 6

@@ -10,6 +10,7 @@ What changed from v1:
 """
 import logging
 import re
+import socket
 
 import asyncpg
 from fastapi import APIRouter, HTTPException
@@ -64,7 +65,13 @@ async def health() -> dict:
         redis_ok = bool(await cache.client().ping())
     except RedisError:
         redis_ok = False
-    return {"status": "ok", "redis": "ok" if redis_ok else "down"}
+    # "instance" shows which replica answered, handy for seeing Nginx
+    # spread requests across the copies of the app.
+    return {
+        "status": "ok",
+        "redis": "ok" if redis_ok else "down",
+        "instance": socket.gethostname(),
+    }
 
 
 @router.get("/{code}/stats", response_model=StatsResponse)
