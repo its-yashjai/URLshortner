@@ -57,7 +57,7 @@ If they ask for more, add the bug story (section 3) and the "it depends where th
 - **If a clash happens anyway**, the `UNIQUE` constraint in Postgres rejects the insert, and the code tries a new random code (up to 5 times).
 - Bonus: creating a link is now **one INSERT** (v1 needed INSERT + UPDATE).
 
-**Why not a Snowflake ID?** Snowflake IDs are built from the **timestamp**, so they're harder to guess but still somewhat predictable and much longer (~11 characters). Random 7-character codes are shorter and truly unguessable. That was a deliberate tradeoff.
+**Why not a Snowflake ID?** Snowflake IDs are built from the **timestamp**, so they're harder to guess but still somewhat predictable and longer (about 10 to 11 characters in base62). Random 7-character codes are shorter and truly unguessable. That was a deliberate tradeoff.
 
 ### Change 4: Graceful degradation
 If Redis goes down, the redirect **doesn't fail**. It catches the Redis error and falls back to the v1 way (read + update Postgres directly). Slower, but the site stays up. The `/health` endpoint reports `"redis": "down"` so you'd notice.
@@ -102,7 +102,7 @@ If Redis goes down, the redirect **doesn't fail**. It catches the Redis error an
 - v2: picks each of the 7 characters **at random** from that alphabet → `k9Ab2xQ`, `P03mzLe`… There's no pattern, so you can't guess another link.
 - `secrets` is the tool that does the random picking. Python's normal `random` module can be predicted by an attacker who sees enough outputs. `secrets` can't, so it's the right tool for anything that must not be guessable.
 
-**Why not a Snowflake ID?** A Snowflake ID is a big number built from **time + machine number + counter**. It's unique, but it's ~11 characters long in base62 and partly guessable (it's based on the clock). Random 7-character codes are shorter and not guessable. That was a deliberate tradeoff.
+**Why not a Snowflake ID?** A Snowflake ID is a big number built from **time + machine number + counter**. It's unique, but it's about 10 to 11 characters long in base62 and partly guessable (it's based on the clock). Random 7-character codes are shorter and not guessable. That was a deliberate tradeoff.
 
 **Why call it "scalable"?** Scalable = it can handle more traffic by adding more machines, without redesigning it.
 - **More users?** Add more app copies behind Nginx. It works because they're stateless.
@@ -185,7 +185,7 @@ In one v2 run you sent **15,791** clicks, but `/stats` showed **15,756**, so 35 
 |---|---|---|
 | App copies | 3, behind Nginx | 1 (Render routes traffic itself) |
 | Always on | While Docker runs | Sleeps after 15 min idle, wakes in ~1 min |
-| Database | Local Postgres | Render Postgres (free one expires after 30 days, then switch to Neon) |
+| Database | Local Postgres | Render Postgres (free one expires after 30 days). Neon's free plan doesn't expire, but its database sleeps after 5 min idle, so the first query after a pause is slower |
 
 **How to prove Redis works on the live site:**
 1. Open `/health`. It should show `"redis": "ok"`, which is the app itself asking Redis "are you there?"

@@ -35,7 +35,7 @@ Read this with the code open. Goal: by the end of the week you can explain every
 | **PostgreSQL** | Reliable, ACID, unique constraints, and the data is simple rows | A key-value store (DynamoDB, Cassandra) scales writes more easily at massive scale |
 | **asyncpg + connection pool** | Opening a new connection per request costs a TCP + auth handshake; a pool reuses a few open connections | Pool too small → requests queue up; too big → Postgres struggles. `DB_POOL_MAX=10` |
 | **Base62 of the id** | Guaranteed unique (ids never repeat), so no collision checks; all chars are URL-safe | **Codes are sequential and guessable**: anyone can enumerate every link. v2 fixes this |
-| **Why 62 characters?** | `0-9 a-z A-Z` = 62. 7 chars → 62⁷ ≈ **3.5 trillion** codes | Base64 adds `+ /`, which aren't URL-safe |
+| **Why 62 characters?** | `0-9 a-z A-Z` = 62. 7 chars → 62⁷ ≈ **3.5 trillion** codes | Standard Base64 adds `+` and `/`, which have special meaning in URLs. A URL-safe variant (base64url, RFC 4648) swaps them for `-` and `_`, so it would also work; base62 simply avoids symbols entirely, so codes are easy to read, type and copy |
 | **`short_code UNIQUE`** | Also creates a B-tree **index**, so lookups are O(log n) instead of scanning the table | Every insert also updates the index (tiny cost) |
 | **Insert then update in a transaction** | We only know the id after inserting; the transaction makes the two steps all-or-nothing | Two statements per create. Could precompute ids from a sequence instead |
 | **302, not 301** | Browsers cache 301 (permanent) forever and skip our server next time, so we'd lose click counts | 301 would reduce our server load. It's a product choice: analytics vs load |
