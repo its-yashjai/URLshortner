@@ -102,6 +102,8 @@ If Redis goes down, the redirect **doesn't fail**. It catches the Redis error an
 - v2: picks each of the 7 characters **at random** from that alphabet → `k9Ab2xQ`, `P03mzLe`… There's no pattern, so you can't guess another link.
 - `secrets` is the tool that does the random picking. Python's normal `random` module can be predicted by an attacker who sees enough outputs. `secrets` can't, so it's the right tool for anything that must not be guessable.
 
+**Why base62 and not base64?** Standard base64 uses `+` and `/`, which have special meanings in URLs. There *is* a URL-safe version called **base64url** that uses `-` and `_` instead, so it would work too. Base62 was chosen because it has **no symbols at all**: codes are easier to read, type and copy. If an interviewer brings up base64url, agree that it works and give that reason.
+
 **Why not a Snowflake ID?** A Snowflake ID is a big number built from **time + machine number + counter**. It's unique, but it's about 10 to 11 characters long in base62 and partly guessable (it's based on the clock). Random 7-character codes are shorter and not guessable. That was a deliberate tradeoff.
 
 **Why call it "scalable"?** Scalable = it can handle more traffic by adding more machines, without redesigning it.
@@ -195,6 +197,28 @@ In one v2 run you sent **15,791** clicks, but `/stats` showed **15,756**, so 35 
 
 ---
 
+## 3c. Checked against official docs
+
+Every technical claim in these notes was checked against the official source. If an interviewer pushes back, this is where the fact comes from.
+
+| Claim | What the docs say | Source |
+|---|---|---|
+| `RENAME` is atomic | Constant-time, atomic. If the new name already exists it's overwritten (we always use a fresh random name, so nothing gets overwritten) | [Redis RENAME](https://redis.io/docs/latest/commands/rename/) |
+| `UNIQUE` creates an index | Postgres automatically creates a unique index to enforce it, and only B-tree indexes can be unique | [PostgreSQL: unique indexes](https://www.postgresql.org/docs/current/indexes-unique.html) |
+| Use `secrets`, not `random` | `random` is "designed for modelling and simulation, not security" | [Python secrets](https://docs.python.org/3/library/secrets.html) |
+| Nginx spreads requests evenly | A name that resolves to several addresses becomes several servers, and the default method is (weighted) round-robin | [Nginx upstream](https://nginx.org/en/docs/http/ngx_http_upstream_module.html) |
+| 301 is cached by browsers | 301 is permanent and commonly sent with long cache times, which is why it can hide clicks from the server | [MDN 301](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/301) |
+| base64url exists | Same as base64 but `+` → `-` and `/` → `_`, safe in URLs | [RFC 4648 §5](https://datatracker.ietf.org/doc/html/rfc4648#section-5) |
+| Render free plan | Web service sleeps after 15 min idle, free Postgres expires after 30 days, free Key Value isn't saved to disk | [Render free plan](https://render.com/docs/free) |
+| Neon free plan | Permanent (not a trial), 0.5 GB per project, database sleeps after 5 min idle | [Neon pricing](https://neon.com/pricing) |
+
+**Corrections made after checking** (earlier versions of these notes said otherwise):
+- "Base64 isn't URL-safe" was incomplete, because base64url exists.
+- Snowflake codes are about **10 to 11** characters in base62, not "~11".
+- Neon's free database doesn't expire, **but** it sleeps after 5 minutes idle.
+
+---
+
 ## 4. Interview questions for v2 (practise out loud)
 
 1. **What is cache-aside?** Check the cache, on a miss read the DB and fill the cache.
@@ -217,3 +241,4 @@ In one v2 run you sent **15,791** clicks, but `/stats` showed **15,756**, so 35 
 18. **Why did the first request after a while take ~1 minute?** Render's free plan puts the app to sleep after 15 idle minutes (a "cold start"). Paid plans keep it always on.
 19. **Why does the live site run 1 copy but your laptop runs 3?** On the free plan Render runs one instance and handles routing itself. The 3 copies + Nginx setup shows horizontal scaling locally. On a paid plan you'd just raise the instance count.
 20. **How do you know Redis is healthy in production?** The `/health` endpoint pings both Postgres and Redis and reports each one.
+21. **Why base62 and not base64url?** base64url would also work. Base62 has no symbols at all, so codes are easier to read, type and copy.
