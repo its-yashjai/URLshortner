@@ -43,6 +43,12 @@ Client ──▶ Nginx :8000 ──┼── app replica 2 ──┼──▶ Re
 - **Nginx** is the only public entry point and spreads requests evenly across the copies.
 - **Flush lock:** every replica runs a flusher, but a short Redis lock (`SET NX PX`) lets only one flush at a time, so clicks are never counted twice.
 
+## Demo page
+
+Open `http://localhost:8000/` to shorten a link, fire test clicks and watch the live click count, and send requests through Nginx to see which of the 3 app copies answered each one. Every response also carries an `X-Served-By` header (try `curl -i localhost:8000/health`).
+
+![Demo page](docs/demo.png)
+
 ## API
 
 | Method | Path | Result |
@@ -50,12 +56,14 @@ Client ──▶ Nginx :8000 ──┼── app replica 2 ──┼──▶ Re
 | `POST` | `/shorten` | body `{"long_url": "https://…"}` → `201 {short_code, short_url, long_url}` |
 | `GET` | `/{code}` | `302` redirect to the long URL (counts a click) |
 | `GET` | `/{code}/stats` | `{short_code, long_url, click_count, created_at}` (includes clicks still buffered) |
+| `GET` | `/` | demo page |
 | `GET` | `/health` | `{"status": "ok", "redis": "ok" or "down"}` |
 
 ## Run it
 
 ```bash
 docker compose up --build            # Postgres + Redis + 3 app replicas + Nginx on :8000
+# then open http://localhost:8000 for the demo page
 curl -X POST localhost:8000/shorten -H 'content-type: application/json' \
      -d '{"long_url":"https://example.com"}'
 ```
@@ -74,7 +82,8 @@ node loadtest/redirects.js http://localhost:8000 CODE1,CODE2 50 20   # url, code
 
 ```
 app/
-  main.py      app + startup/shutdown (starts the click flusher)
+  main.py      app + startup/shutdown (starts the click flusher), demo page, X-Served-By header
+  static/      index.html demo page
   routes.py    endpoints, cache-aside lookup, Redis-down fallback
   cache.py     Redis: link cache + click buffer
   flusher.py   background batch flush of clicks to Postgres (with a Redis lock)

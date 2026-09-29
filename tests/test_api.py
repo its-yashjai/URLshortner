@@ -140,3 +140,10 @@ def test_only_one_replica_flushes_at_a_time(client):
     results = client.portal.call(two_flushers_at_once)
     assert sorted(results) == [0, 6]  # one did the work, the other skipped
     assert client.portal.call(_db_click_count, code) == 6
+
+
+def test_demo_page_and_served_by_header(client):
+    r = client.get("/")
+    assert r.status_code == 200 and "text/html" in r.headers["content-type"]
+    assert "Which copy answered" in r.text
+    assert r.headers["X-Served-By"]

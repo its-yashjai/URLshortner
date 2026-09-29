@@ -9,6 +9,7 @@ What changed from v1:
   * If Redis is down, the app degrades to the v1 behaviour instead of failing.
 """
 import logging
+import os
 import re
 import socket
 
@@ -70,7 +71,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "redis": "ok" if redis_ok else "down",
-        "instance": socket.gethostname(),
+        "instance": os.getenv("INSTANCE_NAME") or socket.gethostname(),
     }
 
 

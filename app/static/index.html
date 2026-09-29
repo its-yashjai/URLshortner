@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>URL Shortener</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #16181d; --muted: #616875; --line: #e3e6eb;
+    --accent: #2f6fed; --accent-soft: #e8efff; --ok: #1f9d55; --bad: #d64545;
+    --c1: #2f6fed; --c2: #e0892b; --c3: #1f9d8a; --c4: #9b59b6; --c5: #d64575;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111317; --card: #1a1d23; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;
+      --accent: #6d9bff; --accent-soft: #1e2a44; --ok: #3ecf7f; --bad: #ff6b6b;
+      --c1: #6d9bff; --c2: #f0a14f; --c3: #3fc9b4; --c4: #bb86d9; --c5: #f07aa0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; }
+  .sub { color: var(--muted); margin: 4px 0 24px; }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-top: 16px; }
+  .card h2 { font-size: 16px; margin: 0 0 4px; }
+  .card p.hint { color: var(--muted); margin: 0 0 14px; font-size: 14px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  input { flex: 1; min-width: 180px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+          background: var(--bg); color: var(--text); font: inherit; }
+  input[type=number] { flex: 0 0 90px; min-width: 0; }
+  button { padding: 10px 16px; border-radius: 8px; border: 0; background: var(--accent); color: #fff;
+           font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .result { margin-top: 14px; padding: 12px; border-radius: 8px; background: var(--accent-soft); display: none; word-break: break-all; }
+  .result a { color: var(--accent); font-weight: 600; }
+  .stat { font-size: 28px; font-weight: 700; }
+  .stat small { font-size: 14px; font-weight: 400; color: var(--muted); }
+  .bars { margin-top: 14px; display: grid; gap: 10px; }
+  .bar { display: grid; grid-template-columns: 150px 1fr 56px; align-items: center; gap: 10px; font-size: 14px; }
+  .bar .track { display: block; height: 14px; background: var(--bg); border-radius: 7px; overflow: hidden; border: 1px solid var(--line); }
+  .bar .fill { display: block; height: 100%; width: 0; border-radius: 7px; transition: width .25s ease; }
+  .bar .n { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar .name code { color: var(--muted); font-size: 12px; }
+  .log { margin-top: 12px; font: 12.5px/1.6 ui-monospace, Consolas, monospace; color: var(--muted);
+         max-height: 120px; overflow: auto; }
+  .err { color: var(--bad); margin-top: 10px; font-size: 14px; }
+  @media (max-width: 520px) { .bar { grid-template-columns: 100px 1fr 44px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>URL Shortener</h1>
+    <div class="pills">
+      <span class="pill"><span id="redisDot" class="dot"></span>Redis <b id="redisTxt">…</b></span>
+      <span class="pill">App copies seen: <b id="copies">0</b></span>
+    </div>
+  </header>
+  <p class="sub">FastAPI + PostgreSQL + Redis, with 3 app copies behind Nginx.</p>
+
+  <section class="card">
+    <h2>1. Shorten a link</h2>
+    <p class="hint">Creates a random, non-guessable 7-character code.</p>
+    <form id="shortenForm" class="row">
+      <input id="longUrl" type="url" required placeholder="https://example.com/some/very/long/link">
+      <button id="shortenBtn">Shorten</button>
+    </form>
+    <div id="shortResult" class="result"></div>
+    <div id="shortErr" class="err"></div>
+  </section>
+
+  <section class="card">
+    <h2>2. Send test clicks</h2>
+    <p class="hint">Clicks the short link many times at once. Each click is counted in Redis, and
+      the counts are saved to Postgres in one batch every 2 seconds.</p>
+    <div class="row">
+      <input id="clickN" type="number" min="1" max="2000" value="100">
+      <button id="clickBtn" disabled>Send clicks</button>
+    </div>
+    <div style="margin-top:14px">
+      <div class="stat"><span id="clickCount">–</span> <small>total clicks on this link (from /stats)</small></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3. Which copy answered?</h2>
+    <p class="hint">Sends requests through Nginx and shows which app copy handled each one.
+      With round-robin, the bars should come out about equal.</p>
+    <div class="row">
+      <input id="traceN" type="number" min="1" max="1000" value="60">
+      <button id="traceBtn">Send requests</button>
+    </div>
+    <div id="bars" class="bars"></div>
+    <div id="log" class="log"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const colors = ["--c1", "--c2", "--c3", "--c4", "--c5"];
+const copies = {};          // instance id -> {n, label, color}
+const shortId = (id) => (id.length > 12 ? id.slice(-8) : id);
+let currentCode = null;
+
+async function refreshHealth() {
+  try {
+    const r = await fetch("/health", { cache: "no-store" });
+    const h = await r.json();
+    seeInstance(r.headers.get("X-Served-By") || h.instance, false);
+    const ok = h.redis === "ok";
+    $("redisDot").className = "dot " + (ok ? "ok" : "bad");
+    $("redisTxt").textContent = ok ? "up" : "down";
+  } catch {
+    $("redisDot").className = "dot bad"; $("redisTxt").textContent = "unreachable";
+  }
+}
+
+function seeInstance(id, count = true) {
+  if (!id) return;
+  if (!copies[id]) {
+    const i = Object.keys(copies).length;
+    copies[id] = { n: 0, label: "Copy " + (i + 1), color: `var(${colors[i % colors.length]})` };
+    $("copies").textContent = Object.keys(copies).length;
+  }
+  if (count) copies[id].n++;
+}
+
+function drawBars() {
+  const list = Object.entries(copies);
+  const max = Math.max(1, ...list.map(([, c]) => c.n));
+  $("bars").innerHTML = list.map(([id, c]) => `
+    <div class="bar">
+      <span class="name">${c.label} <code>${shortId(id)}</code></span>
+      <span class="track"><span class="fill" style="width:${(c.n / max) * 100}%;background:${c.color}"></span></span>
+      <span class="n">${c.n}</span>
+    </div>`).join("");
+}
+
+// Run `total` async jobs with at most `limit` in flight.
+async function pool(total, limit, job) {
+  let next = 0;
+  const worker = async () => { while (next < total) { const i = next++; await job(i); } };
+  await Promise.all(Array.from({ length: Math.min(limit, total) }, worker));
+}
+
+$("shortenForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("shortErr").textContent = "";
+  $("shortenBtn").disabled = true;
+  try {
+    const r = await fetch("/shorten", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ long_url: $("longUrl").value }),
+    });
+    if (!r.ok) throw new Error(r.status === 422 ? "That doesn't look like a valid http(s) URL." : "Error " + r.status);
+    const d = await r.json();
+    currentCode = d.short_code;
+    const shortUrl = location.origin + "/" + d.short_code;
+    $("shortResult").style.display = "block";
+    $("shortResult").innerHTML = `Short link: <a href="${shortUrl}" target="_blank" rel="noopener">${shortUrl}</a>
+      <br><small>code <b>${d.short_code}</b> → ${d.long_url}</small>`;
+    $("clickBtn").disabled = false;
+    $("clickCount").textContent = "0";
+  } catch (err) {
+    $("shortErr").textContent = err.message;
+  } finally {
+    $("shortenBtn").disabled = false;
+  }
+});
+
+async function refreshCount() {
+  if (!currentCode) return;
+  const r = await fetch(`/${currentCode}/stats`, { cache: "no-store" });
+  if (r.ok) $("clickCount").textContent = (await r.json()).click_count.toLocaleString();
+}
+
+$("clickBtn").addEventListener("click", async () => {
+  const n = Math.max(1, Math.min(2000, +$("clickN").value || 1));
+  $("clickBtn").disabled = true;
+  // redirect:"manual" so the browser doesn't actually visit the long URL;
+  // the server still counts the click.
+  await pool(n, 20, () => fetch(`/${currentCode}`, { redirect: "manual", cache: "no-store" }).catch(() => {}));
+  await refreshCount();
+  $("clickBtn").disabled = false;
+});
+
+$("traceBtn").addEventListener("click", async () => {
+  const n = Math.max(1, Math.min(1000, +$("traceN").value || 1));
+  $("traceBtn").disabled = true;
+  Object.values(copies).forEach((c) => (c.n = 0));
+  $("log").innerHTML = "";
+  const lines = [];
+  await pool(n, 6, async (i) => {
+    try {
+      const r = await fetch("/health", { cache: "no-store" });
+      const id = r.headers.get("X-Served-By") || (await r.json()).instance;
+      seeInstance(id);
+      lines.unshift(`#${i + 1} → ${copies[id].label} (${shortId(id)})`);
+    } catch {
+      lines.unshift(`#${i + 1} → failed`);
+    }
+    $("log").innerHTML = lines.slice(0, 40).join("<br>");
+    drawBars();
+  });
+  $("traceBtn").disabled = false;
+});
+
+refreshHealth();
+setInterval(refreshHealth, 5000);
+setInterval(refreshCount, 2000);
+</script>
+</body>
+</html>
