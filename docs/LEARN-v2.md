@@ -159,7 +159,39 @@ In one v2 run you sent **15,791** clicks, but `/stats` showed **15,756**, so 35 
 - My first load tester (Python) was itself maxed out at 100% CPU, so it measured the tester, not the app. That's why I switched to autocannon.
 
 ### Resume line
-> "Added a Redis cache-aside layer and batched click counting to a FastAPI + PostgreSQL URL shortener, cutting p99 redirect latency by 45% and database writes by 99.9%, with zero lost clicks, validated with load tests."
+> **URL Shortener** | [Live demo](https://url-shortener-fufm.onrender.com) | [GitHub](https://github.com/its-yashjai/URLshortner/tree/v2)
+> - Built a scalable URL shortener with PostgreSQL, Redis caching, and random, collision-safe short codes.
+> - Designed a stateless architecture with 3 replicas behind an Nginx load balancer and batched click counting in Redis.
+> - Cut p99 latency by 45% (200 → 111 ms) and database writes by 99.9%, and raised throughput 17% (857 → 999 req/s), validated with load tests.
+> - **Tech Stack:** Python, FastAPI, PostgreSQL, Redis, Nginx, Docker
+
+---
+
+## 3b. Live deployment (Render)
+
+**Live link:** https://url-shortener-fufm.onrender.com
+
+**How it's deployed:** `render.yaml` is a **Blueprint**, a file that tells Render what to create. One click created 3 things and connected them automatically:
+- **Web service:** your app, built from the `Dockerfile`
+- **Postgres database:** Render passes its address to the app as `DATABASE_URL`
+- **Key Value store (Redis-compatible):** passed as `REDIS_URL`
+
+**Two small code changes made it work on Render:**
+- **Port:** Render tells the app which port to listen on through the `PORT` setting, so the Dockerfile uses `${PORT:-8000}` (Render's port, or 8000 on your laptop).
+- **Short-link address:** short links must start with the real website address, not `localhost`. Render provides it as `RENDER_EXTERNAL_URL`, and the app uses that automatically.
+
+**Local vs live:**
+| | Your laptop (Docker Compose) | Render (free) |
+|---|---|---|
+| App copies | 3, behind Nginx | 1 (Render routes traffic itself) |
+| Always on | While Docker runs | Sleeps after 15 min idle, wakes in ~1 min |
+| Database | Local Postgres | Render Postgres (free one expires after 30 days, then switch to Neon) |
+
+**How to prove Redis works on the live site:**
+1. Open `/health`. It should show `"redis": "ok"`, which is the app itself asking Redis "are you there?"
+2. Send 50 clicks on the demo page. The count shows 50 immediately, before Postgres has saved anything. That's Redis holding the clicks.
+
+**Story from deployment:** after going live, the demo page showed "Redis unreachable" in one browser even though `/health` said `"redis": "ok"`. I checked in a second browser and it showed "up", so the app was fine and a browser extension was blocking the page's background check. Lesson: **check the source of truth (`/health`) before assuming the backend is broken.**
 
 ---
 
@@ -182,3 +214,6 @@ In one v2 run you sent **15,791** clicks, but `/stats` showed **15,756**, so 35 
 15. **Why run the benchmark several times?** Results varied by up to ~30% between runs because Docker shares the laptop with other programs. Averaging several runs gives a number you can trust.
 16. **Tell me about a bug you found.** The in-transit clicks bug in section 3: noticed it in the benchmark output, found the cause, fixed it, and added a regression test.
 17. **What would you do next?** Postgres read replicas for more read traffic, and Redis persistence (AOF) to shrink the "lost clicks if Redis crashes" window.
+18. **Why did the first request after a while take ~1 minute?** Render's free plan puts the app to sleep after 15 idle minutes (a "cold start"). Paid plans keep it always on.
+19. **Why does the live site run 1 copy but your laptop runs 3?** On the free plan Render runs one instance and handles routing itself. The 3 copies + Nginx setup shows horizontal scaling locally. On a paid plan you'd just raise the instance count.
+20. **How do you know Redis is healthy in production?** The `/health` endpoint pings both Postgres and Redis and reports each one.

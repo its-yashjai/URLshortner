@@ -1,5 +1,7 @@
 # URL Shortener
 
+**Live demo:** https://url-shortener-fufm.onrender.com (free plan, so the first visit after a quiet spell takes ~1 minute to wake up)
+
 A URL shortener built in two measured versions. v2 fixes the weaknesses of v1 and is benchmarked before and after on the same machine, so every claim is backed by a number.
 
 | Version | What changes | Status |
