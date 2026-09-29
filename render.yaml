@@ -1,0 +1,33 @@
+# Render Blueprint: one click creates the app, a Postgres database and a
+# Redis-compatible Key Value store, and wires their connection strings in.
+# Free tier notes: the web service sleeps after 15 min without traffic
+# (first request then takes ~1 min), the free Postgres expires after 30 days,
+# and free Key Value data is not persisted (fine here: it's only a cache and
+# a 2-second click buffer).
+services:
+  - type: web
+    name: url-shortener
+    runtime: docker
+    plan: free
+    branch: v2
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: url-shortener-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: url-shortener-cache
+          property: connectionString
+
+  - type: keyvalue
+    name: url-shortener-cache
+    plan: free
+    ipAllowList: []   # only reachable from other Render services
+
+databases:
+  - name: url-shortener-db
+    plan: free
+    databaseName: shortener

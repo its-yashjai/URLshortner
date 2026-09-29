@@ -11,7 +11,10 @@ DATABASE_URL = os.getenv(
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 # The public base used to build short links, e.g. https://sho.rt
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
+# On Render, RENDER_EXTERNAL_URL is set automatically to the service's URL.
+BASE_URL = (
+    os.getenv("BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "http://localhost:8000"
+).rstrip("/")
 
 DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "2"))
 DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "10"))
