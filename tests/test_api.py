@@ -147,3 +147,13 @@ def test_demo_page_and_served_by_header(client):
     assert r.status_code == 200 and "text/html" in r.headers["content-type"]
     assert "Which copy answered" in r.text
     assert r.headers["X-Served-By"]
+
+
+def test_bench_endpoints_count_clicks_both_ways(client):
+    code = _shorten(client)
+    assert client.get(f"/bench/v1/{code}").status_code == 204   # straight to Postgres
+    assert client.portal.call(_db_click_count, code) == 1
+    assert client.get(f"/bench/v2/{code}").status_code == 204   # buffered in Redis
+    assert client.get(f"/{code}/stats").json()["click_count"] == 2
+    assert client.get(f"/bench/v3/{code}").status_code == 404
+    assert client.get("/bench/v1/zzzzzzzzzz").status_code == 404

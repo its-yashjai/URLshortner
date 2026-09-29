@@ -14,7 +14,7 @@ import re
 import socket
 
 import asyncpg
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import RedirectResponse
 from redis.exceptions import RedisError
 
@@ -94,24 +94,50 @@ async def stats(code: str) -> StatsResponse:
     return StatsResponse(**data)
 
 
-@router.get("/{code}")
-async def redirect(code: str) -> RedirectResponse:
-    _check_code(code)
+async def _click_v1(code: str) -> str | None:
+    """The v1 path: look up AND count the click with one synchronous
+    Postgres write. Returns the long URL, or None if the code is unknown."""
+    return await db.pool().fetchval(
+        "UPDATE urls SET click_count = click_count + 1 "
+        "WHERE short_code = $1 RETURNING long_url",
+        code,
+    )
+
+
+async def _click_v2(code: str) -> str | None:
+    """The v2 path: look up via the Redis cache, count the click in Redis.
+    Falls back to the v1 path if Redis is unavailable."""
     try:
         long_url = await _lookup_cached(code)
-        if long_url is None:
-            raise HTTPException(status_code=404, detail="short code not found")
-        await cache.record_click(code)  # in-memory, no DB write, no row lock
+        if long_url is not None:
+            await cache.record_click(code)  # in-memory, no DB write, no row lock
+        return long_url
     except RedisError:
         # Graceful degradation: Redis is down, so do it the v1 way.
         log.warning("redis unavailable, falling back to postgres for %s", code)
-        long_url = await db.pool().fetchval(
-            "UPDATE urls SET click_count = click_count + 1 "
-            "WHERE short_code = $1 RETURNING long_url",
-            code,
-        )
-        if long_url is None:
-            raise HTTPException(status_code=404, detail="short code not found")
+        return await _click_v1(code)
+
+
+@router.get("/bench/{mode}/{code}", status_code=204, include_in_schema=False)
+async def bench_click(mode: str, code: str) -> Response:
+    """Used by the demo page's live benchmark: runs exactly the v1 or v2
+    click path (same code as a real redirect) and returns 204 No Content,
+    so the browser measures the server's work, not following a redirect."""
+    _check_code(code)
+    if mode not in ("v1", "v2"):
+        raise HTTPException(status_code=404, detail="mode must be v1 or v2")
+    long_url = await (_click_v1(code) if mode == "v1" else _click_v2(code))
+    if long_url is None:
+        raise HTTPException(status_code=404, detail="short code not found")
+    return Response(status_code=204)
+
+
+@router.get("/{code}")
+async def redirect(code: str) -> RedirectResponse:
+    _check_code(code)
+    long_url = await _click_v2(code)
+    if long_url is None:
+        raise HTTPException(status_code=404, detail="short code not found")
     return RedirectResponse(url=long_url, status_code=302)
 
 

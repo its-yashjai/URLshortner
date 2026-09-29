@@ -47,9 +47,11 @@ Client ──▶ Nginx :8000 ──┼── app replica 2 ──┼──▶ Re
 
 ## Demo page
 
-Open `http://localhost:8000/` to shorten a link, fire test clicks and watch the live click count, and send requests through Nginx to see which of the 3 app copies answered each one. Every response also carries an `X-Served-By` header (try `curl -i localhost:8000/health`).
+Open `http://localhost:8000/` to shorten a link, fire test clicks and watch the live click count, send requests through Nginx to see which of the 3 app copies answered each one, and run a live v1 vs v2 benchmark. Every response also carries an `X-Served-By` header (try `curl -i localhost:8000/health`).
 
 ![Demo page](docs/demo.png)
+
+![Live benchmark](docs/benchmark.png)
 
 ## API
 
@@ -58,7 +60,8 @@ Open `http://localhost:8000/` to shorten a link, fire test clicks and watch the 
 | `POST` | `/shorten` | body `{"long_url": "https://…"}` → `201 {short_code, short_url, long_url}` |
 | `GET` | `/{code}` | `302` redirect to the long URL (counts a click) |
 | `GET` | `/{code}/stats` | `{short_code, long_url, click_count, created_at}` (includes clicks still buffered) |
-| `GET` | `/` | demo page |
+| `GET` | `/` | demo page (includes a live v1 vs v2 benchmark) |
+| `GET` | `/bench/{v1 or v2}/{code}` | runs the v1 or v2 click path and returns 204 (used by the page's benchmark) |
 | `GET` | `/health` | `{"status": "ok", "redis": "ok" or "down"}` |
 
 ## Run it

@@ -113,6 +113,61 @@ If Redis goes down, the redirect **doesn't fail**. It catches the Redis error an
 
 ---
 
+## 2c. Deeper answers (the questions that usually confuse people)
+
+### Why is one Python process a bottleneck?
+Python (the standard version, CPython) has a rule called the **GIL**: inside one process, **only one thread runs Python code at a time**. So one app process can keep only **one CPU core** busy, even if your laptop has 12.
+- Waiting for Redis or Postgres is fine, because Python lets go of the GIL while waiting for the network. That's why async works so well.
+- But the Python work itself (reading the request, building the response) happens on one core. When that core hits ~100% (we saw ~91%), requests start to queue.
+- **Fix:** run **several processes**. Each one gets its own core. That's exactly what the 3 copies behind Nginx do. FastAPI's own docs describe this: several copies of the app, and one thing in front that spreads the requests.
+
+### Can we make unlimited copies?
+**No.** More copies only help until something else becomes the limit:
+1. **CPU cores:** copies beyond the number of cores just fight over the same cores. More machines means more cost.
+2. **Postgres connections:** each copy keeps up to 10 connections open, and Postgres allows **100 by default**. So around 10 copies would use them all, and copy 11 would get errors. (Fix at scale: a connection pooler like PgBouncer, or a bigger database.)
+3. **Redis connections and memory:** the free Render Key Value allows 50 connections.
+4. **The bottleneck moves:** once the app copies are fast enough, the database, Redis, or the network becomes the slow part. Adding copies then does nothing.
+
+**In an interview:** *"Scaling out works until the next shared resource saturates, usually database connections. Then you add pooling, read replicas, or shard."*
+
+### The Redis lock, more simply
+All 3 copies run their own "save clicks to Postgres" job every 2 seconds. If two of them grabbed the same tally at the same moment, both would add it to Postgres, and **those clicks would be counted twice**.
+
+**The lock is like a single bathroom key at a shop counter:**
+- Before saving, a copy asks Redis: *"Give me the key, but only if nobody else has it."* That's `SET clicks:flush-lock <my-id> NX PX 10000`.
+  - **NX** = only if the key doesn't exist yet (nobody holds it).
+  - **PX 10000** = the key disappears on its own after 10 seconds. So if the copy holding it crashes, the key isn't lost forever.
+- **Got the key?** Do the save, then give the key back. It's only given back if it's still *your* key, which is checked with the `<my-id>`.
+- **Didn't get it?** Someone else is saving right now, so skip this round. Try again in 2 seconds.
+
+Redis handles one command at a time, so two copies can never both get the key.
+
+### "The page in the monitor's hand" (the stats bug), step by step
+Picture clicks being tallied on a page called `clicks:pending`.
+1. **Every 2 s, the flusher renames that page** to `clicks:flushing:abc`. It's like tearing it off the pad and carrying it to the office. A new, empty `clicks:pending` starts for new clicks.
+2. **It saves the torn-off page into Postgres**, then throws it away.
+
+Between steps 1 and 2 (a few milliseconds), those clicks are **only** on the torn-off page. They're not in `clicks:pending` anymore, and not in Postgres yet.
+- **Old `/stats`** added up Postgres + `clicks:pending`, so it **missed the torn-off page**, and the number briefly dropped (15,791 sent → 15,756 shown).
+- **New `/stats`** also adds any `clicks:flushing:*` page, so the number is always right.
+
+### Why RENAME before reading?
+Imagine the flusher instead did "read the page, then clear it" as **two separate steps**:
+- It reads: "link A = 100 clicks".
+- A new click arrives, and the page now says 101.
+- It clears the page, and **that 1 click is gone forever**. ❌
+
+`RENAME` does the "take the page away" in **one single step that nothing can interrupt** (that's what **atomic** means). Any click arrives either **before** the rename (so it's on the page being saved) or **after** it (so it's on the fresh page). There's no gap where a click can fall through. ✅
+
+### What if Redis memory fills up during those 2 seconds?
+**It won't, for two reasons:**
+1. **The tally doesn't grow with clicks.** It stores one counter **per link**, not one entry per click. A million clicks on one link is still **one** small number that goes up. It only grows with the number of *different* links clicked in 2 seconds. Redis also packs small tallies (up to 512 entries) very tightly.
+2. **Cached links expire** after 1 hour, so old ones leave on their own.
+
+**But if memory ever did fill up:** Redis's default setting (`noeviction`) is to **refuse new writes with an error** while still allowing reads. In our app, a Redis error means the click **falls back to the v1 path**, so it's written straight to Postgres. Slower, but **no click is lost** and the site stays up. (In production you'd set a memory limit and an eviction policy like `allkeys-lru` for the cache, and monitor memory.)
+
+---
+
 ## 3. The benchmark story (know this well)
 
 ### Your numbers (your laptop, Docker Desktop on Windows)
@@ -197,7 +252,23 @@ In one v2 run you sent **15,791** clicks, but `/stats` showed **15,756**, so 35 
 
 ---
 
-## 3c. Checked against official docs
+## 3c. Live benchmark in the app
+
+The demo page has a **"4. Benchmark: v1 vs v2"** section. It creates two test links, then fires the same number of clicks at:
+- `/bench/v1/<code>`: the **exact** v1 code (one Postgres `UPDATE` per click)
+- `/bench/v2/<code>`: the **exact** v2 code (Redis cache lookup + Redis click counter)
+
+It shows clicks/sec, p50, p95, p99 and errors for each, plus bars and the % change. Both endpoints return **204 No Content** instead of a redirect, so the browser measures the server's work, not a trip to another website.
+
+Example run (3 copies behind Nginx, 1,000 clicks each, 20 at a time): v1 ≈ 520 clicks/s, v2 ≈ 610 clicks/s (about **+15%**), with v2 faster at p50 and p99. Numbers vary run to run.
+
+**Why the resume uses autocannon numbers, not these:** the page runs **in your browser**, so it includes your network and the browser's own limits (about 6 connections per site over HTTP/1.1; HTTP/2 shares one connection). It's great for a **live demo**. autocannon is the proper measuring tool.
+
+**Interview use:** open the live link, click "Run benchmark", and explain the table. It shows you understand what you built.
+
+---
+
+## 3d. Checked against official docs
 
 Every technical claim in these notes was checked against the official source. If an interviewer pushes back, this is where the fact comes from.
 
@@ -211,6 +282,12 @@ Every technical claim in these notes was checked against the official source. If
 | base64url exists | Same as base64 but `+` → `-` and `/` → `_`, safe in URLs | [RFC 4648 §5](https://datatracker.ietf.org/doc/html/rfc4648#section-5) |
 | Render free plan | Web service sleeps after 15 min idle, free Postgres expires after 30 days, free Key Value isn't saved to disk | [Render free plan](https://render.com/docs/free) |
 | Neon free plan | Permanent (not a trial), 0.5 GB per project, database sleeps after 5 min idle | [Neon pricing](https://neon.com/pricing) |
+| Python GIL | Only one thread runs Python bytecode at a time; released during I/O | [Python glossary: GIL](https://docs.python.org/3/glossary.html#term-global-interpreter-lock) |
+| Scale with several processes | Run multiple worker processes/containers with something in front distributing requests | [FastAPI deployment concepts](https://fastapi.tiangolo.com/deployment/concepts/) |
+| Postgres connection limit | `max_connections` default is typically 100 | [PostgreSQL connection settings](https://www.postgresql.org/docs/current/runtime-config-connection.html) |
+| Redis when memory is full | Default `maxmemory-policy` is `noeviction`: writes return an error, reads still work | [redis.conf](https://raw.githubusercontent.com/redis/redis/unstable/redis.conf), [Redis eviction](https://redis.io/docs/latest/develop/reference/eviction/) |
+| Small Redis hashes are compact | Small hashes (≤512 entries by default) use a compact encoding, up to 10× less memory | [Redis memory optimization](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/memory-optimization/) |
+| Browser connection limit | About 6 parallel connections per site on HTTP/1.1; HTTP/2 multiplexes | [MDN: HTTP/1.x connections](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Connection_management_in_HTTP_1.x) |
 
 **Corrections made after checking** (earlier versions of these notes said otherwise):
 - "Base64 isn't URL-safe" was incomplete, because base64url exists.
@@ -242,3 +319,6 @@ Every technical claim in these notes was checked against the official source. If
 19. **Why does the live site run 1 copy but your laptop runs 3?** On the free plan Render runs one instance and handles routing itself. The 3 copies + Nginx setup shows horizontal scaling locally. On a paid plan you'd just raise the instance count.
 20. **How do you know Redis is healthy in production?** The `/health` endpoint pings both Postgres and Redis and reports each one.
 21. **Why base62 and not base64url?** base64url would also work. Base62 has no symbols at all, so codes are easier to read, type and copy.
+22. **Can you add unlimited app copies?** No. It helps until the next shared limit: CPU cores, Postgres connections (100 by default), Redis connections, or cost. Then you add a connection pooler, read replicas, or sharding.
+23. **What if Redis runs out of memory?** The click buffer is one counter per link, so it stays tiny. If Redis were full, its default is to reject writes, and the app falls back to writing clicks directly to Postgres, so nothing is lost.
+24. **How can I see the v1 vs v2 difference myself?** Open the live demo, section 4, and run the benchmark.
