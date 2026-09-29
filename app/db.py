@@ -18,11 +18,12 @@ CREATE TABLE IF NOT EXISTS urls (
 );
 """
 # Notes on the schema:
-# - BIGSERIAL: auto-increment 64-bit id. We base62-encode it into short_code.
+# - BIGSERIAL: auto-increment 64-bit id (internal only since v2).
 # - short_code is UNIQUE, which also gives it a B-tree index, so the
 #   redirect lookup (WHERE short_code = $1) is O(log n), not a full scan.
-# - short_code is nullable only because we learn the id *after* the INSERT,
-#   then fill the code in within the same transaction.
+#   In v2 the same constraint also catches random-code collisions.
+# - short_code is nullable only for compatibility with v1, which learned
+#   the id after the INSERT and filled the code in afterwards.
 
 _pool: asyncpg.Pool | None = None
 

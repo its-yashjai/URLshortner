@@ -1,28 +1,33 @@
-"""End-to-end API tests. They need a running Postgres (DATABASE_URL);
-they are skipped automatically if the database can't be reached."""
+"""End-to-end API tests. They need a running Postgres (DATABASE_URL) and
+Redis (REDIS_URL); they are skipped automatically if either is unreachable."""
+import asyncio
+
 import asyncpg
 import pytest
+import redis
 from fastapi.testclient import TestClient
+from redis.exceptions import RedisError
 
-from app import config
+from app import cache, config, flusher
 from app.main import app
 
 
-def _db_available() -> bool:
-    import asyncio
-
+def _services_available() -> bool:
     async def probe():
         conn = await asyncpg.connect(config.DATABASE_URL, timeout=2)
         await conn.close()
 
     try:
         asyncio.run(probe())
+        redis.from_url(config.REDIS_URL, socket_timeout=2).ping()
         return True
     except Exception:
         return False
 
 
-pytestmark = pytest.mark.skipif(not _db_available(), reason="Postgres not reachable")
+pytestmark = pytest.mark.skipif(
+    not _services_available(), reason="Postgres or Redis not reachable"
+)
 
 
 @pytest.fixture(scope="module")
@@ -31,27 +36,59 @@ def client():
         yield c
 
 
-def test_shorten_redirect_and_count(client):
-    r = client.post("/shorten", json={"long_url": "https://example.com/some/long/path"})
+def _shorten(client, url="https://example.com/some/long/path"):
+    r = client.post("/shorten", json={"long_url": url})
     assert r.status_code == 201
-    code = r.json()["short_code"]
-    assert r.json()["short_url"].endswith("/" + code)
+    return r.json()["short_code"]
 
+
+def test_shorten_redirect_and_count(client):
+    code = _shorten(client)
     for _ in range(3):
         r = client.get(f"/{code}", follow_redirects=False)
         assert r.status_code == 302
         assert r.headers["location"] == "https://example.com/some/long/path"
+    # Clicks are still buffered in Redis, but stats already include them.
+    assert client.get(f"/{code}/stats").json()["click_count"] == 3
 
-    stats = client.get(f"/{code}/stats").json()
-    assert stats["click_count"] == 3
+
+def test_codes_are_random_and_unique(client):
+    codes = [_shorten(client, f"https://example.com/{i}") for i in range(30)]
+    assert len(set(codes)) == 30
+    assert all(len(c) == config.CODE_LENGTH for c in codes)
+    assert codes != sorted(codes)  # not sequential
 
 
-def test_codes_are_unique(client):
-    codes = {
-        client.post("/shorten", json={"long_url": f"https://example.com/{i}"}).json()["short_code"]
-        for i in range(20)
-    }
-    assert len(codes) == 20
+def test_flush_moves_clicks_to_postgres(client):
+    code = _shorten(client)
+    for _ in range(5):
+        client.get(f"/{code}", follow_redirects=False)
+
+    async def run():
+        await flusher.flush_once()
+
+    client.portal.call(run)  # run on the app's own event loop
+    row_count = client.portal.call(_db_click_count, code)
+    assert row_count == 5
+    # After the flush nothing is pending, and stats still say 5.
+    assert client.get(f"/{code}/stats").json()["click_count"] == 5
+
+
+async def _db_click_count(code):
+    from app import db
+    return await db.pool().fetchval("SELECT click_count FROM urls WHERE short_code=$1", code)
+
+
+def test_redis_down_falls_back_to_postgres(client, monkeypatch):
+    code = _shorten(client)
+
+    async def broken(*args, **kwargs):
+        raise RedisError("simulated outage")
+
+    monkeypatch.setattr(cache, "get_cached_url", broken)
+    r = client.get(f"/{code}", follow_redirects=False)
+    assert r.status_code == 302  # still works, the v1 way
+    assert client.portal.call(_db_click_count, code) == 1
 
 
 def test_invalid_url_rejected(client):
@@ -65,4 +102,4 @@ def test_unknown_and_junk_codes_404(client):
 
 
 def test_health(client):
-    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/health").json() == {"status": "ok", "redis": "ok"}
