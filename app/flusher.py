@@ -19,7 +19,7 @@ import uuid
 from app import cache, config, db
 
 log = logging.getLogger("flusher")
-FLUSHING_PREFIX = "clicks:flushing:"
+FLUSHING_PREFIX = cache.FLUSHING_PREFIX
 
 BATCH_UPDATE_SQL = """
 UPDATE urls AS u

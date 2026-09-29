@@ -52,6 +52,18 @@ async def record_click(code: str) -> None:
     await client().hincrby(PENDING_CLICKS, code, 1)
 
 
+FLUSHING_PREFIX = "clicks:flushing:"
+
+
 async def pending_clicks(code: str) -> int:
-    value = await client().hget(PENDING_CLICKS, code)
-    return int(value) if value else 0
+    """Clicks for `code` not yet saved in Postgres.
+
+    Counts both the live buffer AND any snapshot the flusher is in the
+    middle of saving. Without the second part, /stats briefly under-counts
+    during each flush (clicks are "in transit" between Redis and Postgres).
+    """
+    r = client()
+    total = int(await r.hget(PENDING_CLICKS, code) or 0)
+    async for key in r.scan_iter(match=FLUSHING_PREFIX + "*"):
+        total += int(await r.hget(key, code) or 0)
+    return total

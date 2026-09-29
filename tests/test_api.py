@@ -103,3 +103,24 @@ def test_unknown_and_junk_codes_404(client):
 
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok", "redis": "ok"}
+
+
+def test_stats_include_clicks_mid_flush(client):
+    """Regression: clicks being saved (in a flushing snapshot) must still
+    show in /stats. Found while benchmarking: stats dipped during a flush."""
+    code = _shorten(client)
+    for _ in range(4):
+        client.get(f"/{code}", follow_redirects=False)
+
+    async def start_flush_without_finishing():
+        # Step 1 of a flush only: move the live buffer into a snapshot.
+        await cache.client().rename(cache.PENDING_CLICKS, cache.FLUSHING_PREFIX + "test")
+
+    client.portal.call(start_flush_without_finishing)
+    assert client.get(f"/{code}/stats").json()["click_count"] == 4
+
+    async def finish():
+        await flusher.flush_once()
+
+    client.portal.call(finish)
+    assert client.get(f"/{code}/stats").json()["click_count"] == 4

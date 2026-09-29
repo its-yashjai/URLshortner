@@ -9,20 +9,20 @@ A URL shortener built in two measured versions. v2 fixes the weaknesses of v1 an
 
 ## v1 vs v2 results
 
-Redirect endpoint, 50 connections, 20 s, 30-link hot set, [autocannon](https://github.com/mcollina/autocannon), same 2-core machine, two runs each. Postgres statements counted exactly with `pg_stat_statements`.
+Redirect endpoint, 50 concurrent users, 20 s per run, 30 "popular" links, measured with [autocannon](https://github.com/mcollina/autocannon) (`bench.js`). Everything ran in Docker Compose on a Windows laptop (Docker Desktop), v1 and v2 on the same machine, 3 runs of v1 and 4 of v2, averaged.
 
-| | Throughput | p50 | p99 | Postgres `UPDATE`s during the run |
+| | Throughput | p50 latency | p99 latency | Errors |
 |---|---|---|---|---|
-| **v1** | ~2,150 req/s | 22 ms | 43 ms | **~43,000** (one per click) |
-| **v2** | ~2,070 req/s | 22 ms | 44 ms | **10** (one batch every 2 s) |
+| **v1** | 857 req/s | 53 ms | 200 ms | 0 |
+| **v2** | 999 req/s | 47 ms | 111 ms | 0 |
+| **Change** | **+17%** | −12% | **−45%** | |
 
-**What this shows, honestly:**
-- **v2 removes the database from the redirect path.** Postgres went from one write per click to one batched write per 2 seconds (≈99.98% fewer write statements), and every redirect was served from the Redis cache (0 Postgres lookups).
-- **Throughput did not improve on this machine,** because the database wasn't the limit here. The single Python app process was, at ~91% of one CPU core, for both versions. Postgres on a local disk with a tiny table absorbs 2k updates/s easily. The v2 gain shows up when the database is the scarce resource: shared with other services, remote over a network, or under a much higher write load.
-- **No clicks lost:** 100 connections hammering one viral link for 12 s gave identical counts in the stats endpoint and in Postgres after the flush.
-- The next bottleneck is the app process itself. Running several stateless copies of the app behind a load balancer would be the natural next step.
-
-An earlier attempt with the Python `loadtest/bench.py` capped both versions at ~500 req/s. Profiling showed the load generator itself pinned at 100% CPU while the server idled, so those numbers measured the tester, not the app.
+**What this shows:**
+- **The slowest requests improved the most.** v1's p99 was ~4× its p50 because clicks on the same popular link queued for one row lock in Postgres. v2 counts clicks in Redis instead, so that queue disappears and p99 drops by almost half.
+- **Postgres writes on the redirect path fell by ~99.9%.** In a separate run with exact query counting (`pg_stat_statements`), v1 issued ~43,000 `UPDATE`s for ~43,000 clicks, and v2 issued 10 (one batch every 2 s). Every redirect was served from the Redis cache.
+- **No clicks lost:** the server's click count matched the clicks sent on every run.
+- **Runs vary** (v1: 712–1,061 req/s, v2: 790–1,201 req/s) because Docker Desktop shares the laptop with everything else, which is why the numbers above are averages.
+- **The gain depends on where the bottleneck is.** On a faster Linux machine where Postgres wasn't the limit, both versions ran at ~2,100 req/s, capped by the single Python app process. v2 helps most when the database is the slow part, as it was here.
 
 ## Architecture (v2)
 
