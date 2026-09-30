@@ -12,6 +12,105 @@ If they ask for more, add the bug story (section 3) and the "it depends where th
 
 ---
 
+## 1b. Architecture at a glance (v2)
+
+**The big picture:** Nginx spreads users across 3 identical app copies. Redis handles the fast, frequent work (lookups and click counting). Postgres is the permanent record.
+
+```mermaid
+flowchart LR
+    U(["👤 Users"]) --> N["🚦 Nginx :8000<br/>round-robin"]
+    N --> A1 & A2 & A3
+
+    subgraph APP["⚙️ 3 identical app copies (stateless)"]
+        direction TB
+        A1["copy 1"]
+        A2["copy 2"]
+        A3["copy 3"]
+        F["⏱️ flusher, every 2 s<br/>(one copy at a time, via lock)"]
+    end
+
+    subgraph R["⚡ Redis (in memory: fast, temporary)"]
+        direction TB
+        C["cache<br/>url:code → long URL<br/>(expires after 1 h)"]
+        B["click tally<br/>clicks:pending<br/>code → count"]
+        K["clicks:flush-lock"]
+    end
+
+    P[("🐘 PostgreSQL<br/>permanent record")]
+
+    APP -->|"① look up link<br/>② +1 click"| R
+    APP -.->|"only on a cache miss"| P
+    F ==>|"③ every 2 s: take tally,<br/>ONE batched UPDATE"| P
+```
+
+| Part | Job | Why it's there |
+|---|---|---|
+| **Nginx** | Sends each request to the next app copy in turn | One Python process only uses one CPU core |
+| **3 app copies** | Identical and stateless | Any copy can answer any request; add more by changing one number |
+| **Redis cache** | `code → long URL` | Most redirects never touch Postgres |
+| **Redis click tally** | `+1` per click in memory | No row lock, no disk write per click |
+| **Flusher + lock** | Every 2 s, one copy saves all counts in one batch | 1 write instead of thousands; the lock stops double counting |
+| **Postgres** | Links + final click counts, saved to disk | Permanent, safe (ACID) |
+
+### A click, step by step
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 👤 User
+    participant N as 🚦 Nginx
+    participant A as ⚙️ App copy
+    participant R as ⚡ Redis
+    participant P as 🐘 Postgres
+    U->>N: GET /k9Ab2xQ
+    N->>A: next copy in turn (round-robin)
+    A->>R: GET url:k9Ab2xQ
+    alt ✅ cache hit (most clicks)
+        R-->>A: long URL
+    else ❌ cache miss
+        R-->>A: nothing
+        A->>P: SELECT long_url (via B-tree index)
+        P-->>A: long URL
+        A->>R: SET url:k9Ab2xQ (expires in 1 h)
+    end
+    A->>R: HINCRBY clicks:pending k9Ab2xQ 1
+    A-->>U: 302 redirect (user never waits for Postgres)
+```
+
+### Saving clicks, every 2 seconds
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant F as ⏱️ Flusher (in each copy)
+    participant R as ⚡ Redis
+    participant P as 🐘 Postgres
+    F->>R: SET clicks:flush-lock NX PX 10000
+    alt 🔒 another copy already has the lock
+        R-->>F: no → skip this round
+    else 🔑 got the lock
+        R-->>F: OK
+        F->>R: RENAME clicks:pending → clicks:flushing:abc
+        Note over R: new clicks now land in a fresh clicks:pending
+        F->>R: HGETALL clicks:flushing:abc
+        F->>P: ONE UPDATE for all links
+        P-->>F: saved ✅
+        F->>R: DEL clicks:flushing:abc
+        F->>R: release lock (only if it's still mine)
+    end
+```
+
+### If something breaks
+
+```mermaid
+flowchart TD
+    X{"What failed?"} -->|"⚡ Redis down"| RD["Redirects still work:<br/>app falls back to Postgres (v1 path)<br/>⚠️ lose up to ~2 s of unsaved clicks"]
+    X -->|"🐘 Postgres down during a flush"| PD["Snapshot stays in Redis<br/>saved on the next try<br/>✅ nothing lost"]
+    X -->|"⚙️ one app copy crashes"| AD["Nginx uses the other copies<br/>its lock expires after 10 s<br/>✅ nothing lost"]
+```
+
+---
+
 ## 2. The 5 changes in v2
 
 ### Change 1: Redis cache ("cache-aside")
@@ -142,6 +241,15 @@ All 3 copies run their own "save clicks to Postgres" job every 2 seconds. If two
 
 Redis handles one command at a time, so two copies can never both get the key.
 
+```mermaid
+flowchart TD
+    T["⏱️ Every 2 s, in EACH of the 3 copies"] --> Q{"SET clicks:flush-lock NX PX 10000<br/>Did I get the key?"}
+    Q -->|"🔑 yes"| W["Save clicks<br/>(RENAME → one UPDATE → DEL)<br/>then give the key back"]
+    Q -->|"🔒 no, another copy has it"| S["Skip this round<br/>try again in 2 s"]
+    W -.->|"if this copy crashes"| E["Key disappears by itself<br/>after 10 s (PX)"]
+```
+
+
 ### "The page in the monitor's hand" (the stats bug), step by step
 Picture clicks being tallied on a page called `clicks:pending`.
 1. **Every 2 s, the flusher renames that page** to `clicks:flushing:abc`. It's like tearing it off the pad and carrying it to the office. A new, empty `clicks:pending` starts for new clicks.
@@ -158,6 +266,27 @@ Imagine the flusher instead did "read the page, then clear it" as **two separate
 - It clears the page, and **that 1 click is gone forever**. ❌
 
 `RENAME` does the "take the page away" in **one single step that nothing can interrupt** (that's what **atomic** means). Any click arrives either **before** the rename (so it's on the page being saved) or **after** it (so it's on the fresh page). There's no gap where a click can fall through. ✅
+
+```mermaid
+sequenceDiagram
+    participant F as ⏱️ Flusher
+    participant R as ⚡ Redis tally
+    participant C as 👤 New click
+    rect rgba(214, 69, 69, 0.12)
+    Note over F,C: ❌ Read, then delete (two steps, with a gap)
+    F->>R: read → link A = 100
+    C->>R: +1 → link A = 101
+    F->>R: delete the tally
+    Note over R: the 101st click was never read → LOST
+    end
+    rect rgba(31, 157, 85, 0.12)
+    Note over F,C: ✅ RENAME (one atomic step, no gap)
+    F->>R: RENAME pending → snapshot
+    C->>R: +1 → lands in a fresh pending
+    F->>R: read snapshot, save it, delete it
+    Note over R: every click is either in the snapshot or the fresh tally
+    end
+```
 
 ### What if Redis memory fills up during those 2 seconds?
 **It won't, for two reasons:**
@@ -227,6 +356,13 @@ In one v2 run you sent **15,791** clicks, but `/stats` showed **15,756**, so 35 
 ## 3b. Live deployment (Render)
 
 **Live link:** https://url-shortener-fufm.onrender.com
+
+```mermaid
+flowchart LR
+    U(["👤 Anyone, anywhere"]) -->|"https://url-shortener-fufm.onrender.com"| W["⚙️ Render web service<br/>(1 app copy, Docker)"]
+    W --> KV[("⚡ Render Key Value<br/>Redis-compatible")]
+    W --> PG[("🐘 Render Postgres")]
+```
 
 **How it's deployed:** `render.yaml` is a **Blueprint**, a file that tells Render what to create. One click created 3 things and connected them automatically:
 - **Web service:** your app, built from the `Dockerfile`

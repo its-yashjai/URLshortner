@@ -10,6 +10,62 @@ Read this with the code open. Goal: by the end of the week you can explain every
 
 ---
 
+## 1b. Architecture at a glance (v1)
+
+The whole of v1 is one app and one database:
+
+```mermaid
+flowchart LR
+    U(["👤 User / browser"]) -->|"POST /shorten"| A["⚙️ FastAPI app<br/>(1 process)"]
+    U -->|"GET /{code}"| A
+    A <-->|"connection pool<br/>(up to 10 open connections)"| P[("🐘 PostgreSQL<br/>table: urls<br/>UNIQUE index on short_code")]
+```
+
+**Creating a link:**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 👤 User
+    participant A as ⚙️ FastAPI
+    participant P as 🐘 PostgreSQL
+    U->>A: POST /shorten {"long_url": "https://..."}
+    Note over A: Pydantic checks it's a valid http(s) URL
+    A->>P: INSERT long_url → returns id (e.g. 125)
+    Note over A: base62(125) = "21"
+    A->>P: UPDATE row 125 SET short_code = "21"
+    Note over A,P: both steps in ONE transaction (all or nothing)
+    A-->>U: 201 {"short_code": "21", ...}
+```
+
+**Clicking a link:**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 👤 User
+    participant A as ⚙️ FastAPI
+    participant P as 🐘 PostgreSQL
+    U->>A: GET /21
+    A->>P: UPDATE click_count + 1 WHERE short_code = '21' RETURNING long_url
+    Note over P: finds the row via the B-tree index (fast)<br/>then LOCKS the row and writes to disk (slow part)
+    P-->>A: long_url
+    A-->>U: 302 redirect → long_url
+```
+
+**The bottleneck in one picture:** every click on a popular link needs the **same row**, so they wait in line:
+
+```mermaid
+flowchart LR
+    C1["click"] --> L
+    C2["click"] --> L
+    C3["click"] --> L
+    C4["click …"] --> L
+    L{{"🔒 row lock<br/>for link '21'<br/>one at a time"}} --> P[("🐘 Postgres<br/>write to disk")]
+```
+
+---
+
 ## 2. How a request flows
 
 **Creating a link: `POST /shorten`**
