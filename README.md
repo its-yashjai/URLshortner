@@ -105,6 +105,6 @@ app/
   config.py    env-var settings
 tests/         unit + API tests
 loadtest/      redirects.js (autocannon), bench.py (simple Python tester)
-docs/          LEARN.md (v1), LEARN-v2.md (v2)
+docs/          screenshots used in this README (benchmark, demo)
 nginx.conf     load balancer config for the app replicas
 ```
