@@ -74,6 +74,7 @@
   <header>
     <h1>URL Shortener</h1>
     <div class="pills">
+      <span class="pill"><span id="dbDot" class="dot"></span>Postgres <b id="dbTxt">…</b></span>
       <span class="pill"><span id="redisDot" class="dot"></span>Redis <b id="redisTxt">…</b></span>
       <span class="pill">App copies seen: <b id="copies">0</b></span>
     </div>
@@ -145,11 +146,17 @@ async function refreshHealth() {
     const r = await fetch("/health", { cache: "no-store" });
     const h = await r.json();
     seeInstance(r.headers.get("X-Served-By") || h.instance, false);
+    const dbOk = h.database !== "down";
+    $("dbDot").className = "dot " + (dbOk ? "ok" : "bad");
+    $("dbTxt").textContent = dbOk ? "up" : "down";
     const ok = h.redis === "ok";
     $("redisDot").className = "dot " + (ok ? "ok" : "bad");
     $("redisTxt").textContent = ok ? "up" : "down";
   } catch {
-    $("redisDot").className = "dot bad"; $("redisTxt").textContent = "unreachable";
+    // The health check itself failed, so we cannot tell which part is down.
+    for (const k of ["db", "redis"]) {
+      $(k + "Dot").className = "dot bad"; $(k + "Txt").textContent = "no reply";
+    }
   }
 }
 
