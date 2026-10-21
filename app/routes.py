@@ -60,8 +60,14 @@ async def shorten(body: ShortenRequest) -> ShortenResponse:
 
 @router.get("/health")
 async def health() -> dict:
-    async with db.pool().acquire() as conn:
-        await conn.fetchval("SELECT 1")
+    # Report each dependency separately so the page can say which one is down.
+    try:
+        async with db.pool().acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        db_ok = True
+    except Exception:
+        log.exception("health: database check failed")
+        db_ok = False
     try:
         redis_ok = bool(await cache.client().ping())
     except RedisError:
@@ -69,7 +75,8 @@ async def health() -> dict:
     # "instance" shows which replica answered, handy for seeing Nginx
     # spread requests across the copies of the app.
     return {
-        "status": "ok",
+        "status": "ok" if db_ok else "degraded",
+        "database": "ok" if db_ok else "down",
         "redis": "ok" if redis_ok else "down",
         "instance": os.getenv("INSTANCE_NAME") or socket.gethostname(),
     }

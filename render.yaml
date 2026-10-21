@@ -1,7 +1,10 @@
-# Render Blueprint: one click creates the app, a Postgres database and a
-# Redis-compatible Key Value store, and wires their connection strings in.
+# Render Blueprint: one click creates the app and a Redis-compatible Key Value
+# store, and wires the Redis connection string in.
+# The database is a free Neon Postgres (Render's free Postgres expires after
+# 30 days, Neon's free plan does not). Paste its connection string as
+# DATABASE_URL when Render asks for it during the Blueprint setup.
 # Free tier notes: the web service sleeps after 15 min without traffic
-# (first request then takes ~1 min), the free Postgres expires after 30 days,
+# (first request then takes ~1 min), the Neon database sleeps after 5 min idle,
 # and free Key Value data is not persisted (fine here: it's only a cache and
 # a 2-second click buffer).
 services:
@@ -13,9 +16,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: url-shortener-db
-          property: connectionString
+        sync: false   # secret: the Neon connection string, set in the dashboard
       - key: REDIS_URL
         fromService:
           type: keyvalue
@@ -26,8 +27,3 @@ services:
     name: url-shortener-cache
     plan: free
     ipAllowList: []   # only reachable from other Render services
-
-databases:
-  - name: url-shortener-db
-    plan: free
-    databaseName: shortener

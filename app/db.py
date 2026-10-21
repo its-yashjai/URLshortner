@@ -34,6 +34,7 @@ async def connect() -> None:
         config.DATABASE_URL,
         min_size=config.DB_POOL_MIN,
         max_size=config.DB_POOL_MAX,
+        statement_cache_size=config.DB_STATEMENT_CACHE_SIZE,
     )
     async with _pool.acquire() as conn:
         await conn.execute(SCHEMA)

@@ -79,7 +79,13 @@ To run v1 for comparison: `git checkout v1 && docker compose up --build`.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/its-yashjai/URLshortner/tree/v2)
 
-`render.yaml` creates the app (Docker), a Postgres database and a Redis-compatible Key Value store, and wires their connection strings in automatically. On the free plan it runs a single app copy (the 3-replica Nginx setup is for Docker Compose), sleeps after 15 minutes without traffic, and the free Postgres expires after 30 days. For a permanent link, point `DATABASE_URL` at a free Neon database instead (Neon's free plan doesn't expire; its database sleeps after 5 minutes idle).
+`render.yaml` creates the app (Docker) and a Redis-compatible Key Value store, and wires the Redis connection string in. The database is a free [Neon](https://neon.tech) Postgres, because Render's free Postgres expires after 30 days and Neon's free plan does not (its database just sleeps after 5 minutes idle).
+
+1. Create a free Neon project and copy its connection string (`postgresql://...?sslmode=require`).
+2. Click the button above. When Render asks for `DATABASE_URL`, paste the Neon string.
+3. The app creates its table on first start.
+
+On the free plan Render runs a single app copy (the 3-replica Nginx setup is for Docker Compose) and sleeps after 15 minutes without traffic.
 
 ## Tests and benchmarks
 
